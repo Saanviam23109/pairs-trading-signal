@@ -31,10 +31,10 @@ for s1, s2 in itertools.combinations(data.columns, 2):
 if pairs:
     pairs_df = pd.DataFrame(pairs, columns=["Stock 1", "Stock 2", "P-Value"])
     pairs_df.sort_values("P-Value", inplace=True)
-    print(f"✅ Found {len(pairs)} cointegrated pairs:\n")
+    print(f"Found {len(pairs)} cointegrated pairs:\n")
     print(pairs_df.to_string(index=False))
 else:
-    print("❌ No cointegrated pairs found in this universe")
+    print("No cointegrated pairs found in this universe")
 
     # ── 4. Build the trading signal for best pair ───────────────────────
 s1, s2 = "PEP", "XOM"
@@ -58,7 +58,7 @@ signals["long_entry"]  = zscore < -2      # Buy signal
 signals["short_entry"] = zscore > 2       # Sell signal
 signals["exit"]        = abs(zscore) < 0.5  # Exit signal
 
-print(f"\n📊 Signal Summary:")
+print(f"\n Signal Summary:")
 print(f"Long entries (buy):  {signals['long_entry'].sum()}")
 print(f"Short entries (sell): {signals['short_entry'].sum()}")
 print(f"Exit signals:        {signals['exit'].sum()}")
@@ -100,7 +100,7 @@ ax2.grid(alpha=0.3)
 plt.tight_layout()
 plt.savefig("pairs_trading_signal.png", dpi=150)
 plt.show()
-print("\n✅ Chart saved as pairs_trading_signal.png")
+print("\n Chart saved as pairs_trading_signal.png")
 
 # ── 7. Simple Backtest ──────────────────────────────────────────────
 # Position: +1 = long PEP/short XOM, -1 = short PEP/long XOM, 0 = flat
@@ -135,7 +135,7 @@ plt.show()
 
 # ── 9. Print performance summary ────────────────────────────────────
 total_return = signals["cumulative_returns"].iloc[-1] - 1
-print(f"\n📈 Strategy Performance Summary:")
+print(f"\n Strategy Performance Summary:")
 print(f"Total Return:        {total_return*100:.2f}%")
 print(f"Starting value:      $10,000")
 print(f"Ending value:        ${10000 * (1 + total_return):,.2f}")
