@@ -1,141 +1,328 @@
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from statsmodels.tsa.stattools import coint
+import warnings
+warnings.filterwarnings("ignore")
+
 import itertools
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import matplotlib.pyplot as plt
 
-# ── 1. Define candidate stocks ──────────────────────────────────────
-# A diverse universe of liquid US stocks across sectors
-tickers = ["XOM", "CVX", "KO", "PEP", "JPM", "BAC", "GS", "MS",
-           "GOOG", "MSFT", "AAPL", "META", "WMT", "TGT", "MCD", "YUM"]
+from statsmodels.tsa.stattools import coint, adfuller
+import statsmodels.api as sm
 
-start = "2020-01-01"
-end = "2024-01-01"
 
-print("Downloading data...")
-data = yf.download(tickers, start=start, end=end)["Close"]
-data.dropna(axis=1, inplace=True)
-print(f"Downloaded {data.shape[1]} stocks, {data.shape[0]} days\n")
+# ============================================================
+# 1. CONFIG
+# ============================================================
+tickers = [
+    "XOM", "CVX", "KO", "PEP", "JPM", "BAC", "GS", "MS",
+    "GOOG", "MSFT", "AAPL", "META", "WMT", "TGT", "MCD", "YUM"
+]
 
-# ── 2. Scan all pairs for cointegration ─────────────────────────────
-print("Scanning pairs for cointegration...")
-pairs = []
+start_date = "2020-01-01"
+end_date = "2024-01-01"
 
-for s1, s2 in itertools.combinations(data.columns, 2):
-    score, pvalue, _ = coint(data[s1], data[s2])
-    if pvalue < 0.05:
-        pairs.append((s1, s2, round(pvalue, 4)))
+initial_capital = 10_000
+entry_z = 2.0
+exit_z = 0.5
+rolling_window = 60
+transaction_cost_rate = 0.001   # 0.1% per position change
+min_training_points = 252       # ~1 trading year for formation
 
-# ── 3. Show results ──────────────────────────────────────────────────
-if pairs:
-    pairs_df = pd.DataFrame(pairs, columns=["Stock 1", "Stock 2", "P-Value"])
-    pairs_df.sort_values("P-Value", inplace=True)
-    print(f"Found {len(pairs)} cointegrated pairs:\n")
-    print(pairs_df.to_string(index=False))
-else:
-    print("No cointegrated pairs found in this universe")
 
-    # ── 4. Build the trading signal for best pair ───────────────────────
-s1, s2 = "PEP", "XOM"
+# ============================================================
+# 2. DOWNLOAD DATA
+# ============================================================
+print("Downloading price data...")
+prices = yf.download(tickers, start=start_date, end=end_date)["Close"]
+prices = prices.dropna(axis=1)
+prices = prices.dropna()
 
-# Calculate the spread (difference between the two normalized prices)
-spread = data[s1] - data[s2]
+print(f"Downloaded {prices.shape[1]} stocks, {prices.shape[0]} trading days.\n")
 
-# Z-score tells us how far the spread is from its mean
-# When z-score is extreme, we expect it to revert back to zero
-zscore = (spread - spread.mean()) / spread.std()
 
-# ── 5. Generate buy/sell signals ────────────────────────────────────
-# When z-score > 2: spread is too wide → sell PEP, buy XOM
-# When z-score < -2: spread is too narrow → buy PEP, sell XOM
-# When z-score crosses 0: close the position
+# ============================================================
+# 3. TRAIN / TEST SPLIT
+# ============================================================
+split_idx = int(len(prices) * 0.6)  # 60% formation, 40% trading
+train_prices = prices.iloc[:split_idx].copy()
+test_prices = prices.iloc[split_idx:].copy()
 
-signals = pd.DataFrame(index=data.index)
-signals["spread"] = spread
-signals["zscore"] = zscore
-signals["long_entry"]  = zscore < -2      # Buy signal
-signals["short_entry"] = zscore > 2       # Sell signal
-signals["exit"]        = abs(zscore) < 0.5  # Exit signal
+if len(train_prices) < min_training_points:
+    raise ValueError("Training sample is too short for robust pair selection.")
 
-print(f"\n Signal Summary:")
-print(f"Long entries (buy):  {signals['long_entry'].sum()}")
-print(f"Short entries (sell): {signals['short_entry'].sum()}")
-print(f"Exit signals:        {signals['exit'].sum()}")
+print(f"Formation period: {train_prices.index[0].date()} to {train_prices.index[-1].date()}")
+print(f"Trading period:   {test_prices.index[0].date()} to {test_prices.index[-1].date()}\n")
 
-# ── 6. Plot the results ─────────────────────────────────────────────
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-fig.suptitle("Pairs Trading Signal: PEP vs XOM", fontsize=14, fontweight="bold")
 
-# ── Top chart: Stock prices ──────────────────────────────────────────
-ax1.plot(data["PEP"], label="PEP", color="royalblue")
-ax1.plot(data["XOM"], label="XOM", color="darkorange")
-ax1.set_ylabel("Price (USD)")
-ax1.legend()
-ax1.set_title("Stock Prices")
-ax1.grid(alpha=0.3)
+# ============================================================
+# 4. HELPER FUNCTIONS
+# ============================================================
+def estimate_hedge_ratio(y: pd.Series, x: pd.Series) -> float:
+    """
+    Estimate hedge ratio beta from OLS:
+        y = alpha + beta * x + epsilon
+    """
+    x_const = sm.add_constant(x)
+    model = sm.OLS(y, x_const).fit()
+    return model.params[x.name]
 
-# ── Bottom chart: Z-score + signals ─────────────────────────────────
-ax2.plot(zscore, label="Z-Score", color="purple", linewidth=1)
-ax2.axhline(2,    color="red",   linestyle="--", linewidth=1, label="Sell threshold (+2)")
-ax2.axhline(-2,   color="green", linestyle="--", linewidth=1, label="Buy threshold (-2)")
-ax2.axhline(0.5,  color="gray",  linestyle=":",  linewidth=1)
-ax2.axhline(-0.5, color="gray",  linestyle=":",  linewidth=1, label="Exit zone (±0.5)")
 
-# Plot buy signals
-ax2.scatter(zscore.index[signals["long_entry"]],
-            zscore[signals["long_entry"]],
-            color="green", marker="^", s=80, zorder=5, label="Buy")
+def compute_spread(y: pd.Series, x: pd.Series, beta: float) -> pd.Series:
+    """
+    Construct hedge-ratio adjusted spread.
+    """
+    return y - beta * x
 
-# Plot sell signals
-ax2.scatter(zscore.index[signals["short_entry"]],
-            zscore[signals["short_entry"]],
-            color="red", marker="v", s=80, zorder=5, label="Sell")
 
-ax2.set_ylabel("Z-Score")
-ax2.set_title("Trading Signals (Z-Score of Spread)")
-ax2.legend(loc="upper right", fontsize=8)
-ax2.grid(alpha=0.3)
+def compute_rolling_zscore(spread: pd.Series, window: int) -> pd.Series:
+    """
+    Rolling z-score using only past information.
+    """
+    rolling_mean = spread.rolling(window).mean()
+    rolling_std = spread.rolling(window).std()
+    z = (spread - rolling_mean) / rolling_std
+    return z
 
-plt.tight_layout()
-plt.savefig("pairs_trading_signal.png", dpi=150)
-plt.show()
-print("\n Chart saved as pairs_trading_signal.png")
 
-# ── 7. Simple Backtest ──────────────────────────────────────────────
-# Position: +1 = long PEP/short XOM, -1 = short PEP/long XOM, 0 = flat
+def annualized_sharpe(returns: pd.Series, rf: float = 0.0) -> float:
+    """
+    Annualized Sharpe ratio from daily returns.
+    """
+    returns = returns.dropna()
+    if returns.std() == 0 or len(returns) < 2:
+        return np.nan
+    excess = returns - rf / 252
+    return np.sqrt(252) * excess.mean() / excess.std()
+
+
+def max_drawdown(equity_curve: pd.Series) -> float:
+    """
+    Maximum drawdown from equity curve.
+    """
+    running_max = equity_curve.cummax()
+    drawdown = equity_curve / running_max - 1
+    return drawdown.min()
+
+
+def calculate_half_life(spread: pd.Series) -> float:
+    """
+    Estimate half-life of mean reversion using an AR(1)-style regression.
+    """
+    spread_lag = spread.shift(1).dropna()
+    spread_ret = spread.diff().dropna()
+
+    aligned = pd.concat([spread_lag, spread_ret], axis=1).dropna()
+    if aligned.empty:
+        return np.nan
+
+    x = sm.add_constant(aligned.iloc[:, 0])
+    y = aligned.iloc[:, 1]
+    model = sm.OLS(y, x).fit()
+
+    beta = model.params.iloc[1]
+    if beta >= 0:
+        return np.nan
+
+    half_life = -np.log(2) / beta
+    return float(half_life)
+
+
+# ============================================================
+# 5. PAIR SELECTION ON FORMATION PERIOD
+# ============================================================
+print("Scanning pairs in formation period for cointegration...\n")
+
+pair_results = []
+
+for s1, s2 in itertools.combinations(train_prices.columns, 2):
+    y_train = train_prices[s1]
+    x_train = train_prices[s2]
+
+    try:
+        coint_stat, pvalue, _ = coint(y_train, x_train)
+        beta = estimate_hedge_ratio(y_train, x_train)
+        spread_train = compute_spread(y_train, x_train, beta)
+
+        adf_pvalue = adfuller(spread_train.dropna())[1]
+        hl = calculate_half_life(spread_train.dropna())
+
+        pair_results.append({
+            "stock_1": s1,
+            "stock_2": s2,
+            "coint_pvalue": pvalue,
+            "adf_pvalue": adf_pvalue,
+            "hedge_ratio": beta,
+            "half_life": hl
+        })
+    except Exception:
+        continue
+
+pairs_df = pd.DataFrame(pair_results)
+
+# Filter for stronger candidates
+filtered_pairs = pairs_df[
+    (pairs_df["coint_pvalue"] < 0.05) &
+    (pairs_df["adf_pvalue"] < 0.05) &
+    (pairs_df["half_life"].notna()) &
+    (pairs_df["half_life"] > 1) &
+    (pairs_df["half_life"] < 60)
+].copy()
+
+if filtered_pairs.empty:
+    raise ValueError("No suitable cointegrated pairs found.")
+
+filtered_pairs = filtered_pairs.sort_values(["coint_pvalue", "adf_pvalue", "half_life"])
+best_pair = filtered_pairs.iloc[0]
+
+s1 = best_pair["stock_1"]
+s2 = best_pair["stock_2"]
+beta = best_pair["hedge_ratio"]
+
+print("Top candidate pairs:")
+print(filtered_pairs.head(10).to_string(index=False))
+print("\nSelected best pair:")
+print(f"{s1} / {s2}")
+print(f"Cointegration p-value: {best_pair['coint_pvalue']:.4f}")
+print(f"ADF p-value:           {best_pair['adf_pvalue']:.4f}")
+print(f"Hedge ratio (beta):    {beta:.4f}")
+print(f"Half-life:             {best_pair['half_life']:.2f} days\n")
+
+
+# ============================================================
+# 6. BUILD TEST-PERIOD SPREAD AND SIGNALS
+# ============================================================
+y_test = test_prices[s1]
+x_test = test_prices[s2]
+
+spread_test = compute_spread(y_test, x_test, beta)
+zscore_test = compute_rolling_zscore(spread_test, rolling_window)
+
+signals = pd.DataFrame(index=test_prices.index)
+signals["y_price"] = y_test
+signals["x_price"] = x_test
+signals["spread"] = spread_test
+signals["zscore"] = zscore_test
+
+# Position convention:
+# +1 = long spread  = long y, short beta*x
+# -1 = short spread = short y, long beta*x
 position = 0
-portfolio = [0]
-returns = data["PEP"].pct_change().fillna(0) - data["XOM"].pct_change().fillna(0)
-
 positions = []
-for i in range(len(signals)):
-    if signals["long_entry"].iloc[i]:
-        position = 1
-    elif signals["short_entry"].iloc[i]:
-        position = -1
-    elif signals["exit"].iloc[i]:
-        position = 0
+
+for z in signals["zscore"]:
+    if pd.isna(z):
+        positions.append(0)
+        continue
+
+    if position == 0:
+        if z < -entry_z:
+            position = 1
+        elif z > entry_z:
+            position = -1
+    else:
+        if abs(z) < exit_z:
+            position = 0
+
     positions.append(position)
 
 signals["position"] = positions
-signals["strategy_returns"] = signals["position"].shift(1) * returns
-signals["cumulative_returns"] = (1 + signals["strategy_returns"]).cumprod()
 
-# ── 8. Plot cumulative returns ───────────────────────────────────────
-fig, ax = plt.subplots(figsize=(14, 5))
-ax.plot(signals["cumulative_returns"], color="green", linewidth=1.5)
-ax.axhline(1, color="gray", linestyle="--", linewidth=1)
-ax.set_title("Pairs Trading Strategy — Cumulative Returns (PEP vs XOM)", fontweight="bold")
-ax.set_ylabel("Portfolio Growth (1 = starting value)")
-ax.grid(alpha=0.3)
+
+# ============================================================
+# 7. STRATEGY RETURNS
+# ============================================================
+# Daily returns of each leg
+signals["y_ret"] = signals["y_price"].pct_change().fillna(0)
+signals["x_ret"] = signals["x_price"].pct_change().fillna(0)
+
+# Hedge-ratio-adjusted spread return approximation
+# long spread  = +y - beta*x
+# short spread = -y + beta*x
+signals["gross_strategy_return"] = (
+    signals["position"].shift(1).fillna(0) *
+    (signals["y_ret"] - beta * signals["x_ret"])
+)
+
+# Transaction costs when position changes
+signals["position_change"] = signals["position"].diff().abs().fillna(0)
+signals["transaction_cost"] = signals["position_change"] * transaction_cost_rate
+
+signals["net_strategy_return"] = (
+    signals["gross_strategy_return"] - signals["transaction_cost"]
+)
+
+signals["equity_curve"] = (1 + signals["net_strategy_return"]).cumprod()
+signals["portfolio_value"] = initial_capital * signals["equity_curve"]
+
+
+# ============================================================
+# 8. PERFORMANCE METRICS
+# ============================================================
+total_return = signals["equity_curve"].iloc[-1] - 1
+sharpe = annualized_sharpe(signals["net_strategy_return"])
+mdd = max_drawdown(signals["equity_curve"])
+
+n_days = len(signals)
+annual_return = (signals["equity_curve"].iloc[-1]) ** (252 / n_days) - 1 if n_days > 0 else np.nan
+calmar = annual_return / abs(mdd) if pd.notna(mdd) and mdd != 0 else np.nan
+
+num_trades = int((signals["position_change"] > 0).sum())
+
+print("Strategy Performance Summary")
+print("-" * 40)
+print(f"Selected pair:         {s1} / {s2}")
+print(f"Formation hedge ratio: {beta:.4f}")
+print(f"Trading days:          {n_days}")
+print(f"Number of trades:      {num_trades}")
+print(f"Total return:          {total_return * 100:.2f}%")
+print(f"Annualized return:     {annual_return * 100:.2f}%")
+print(f"Sharpe ratio:          {sharpe:.2f}")
+print(f"Max drawdown:          {mdd * 100:.2f}%")
+print(f"Calmar ratio:          {calmar:.2f}")
+print(f"Starting value:        ${initial_capital:,.2f}")
+print(f"Ending value:          ${signals['portfolio_value'].iloc[-1]:,.2f}")
+
+
+# ============================================================
+# 9. PLOTS
+# ============================================================
+plt.figure(figsize=(14, 5))
+plt.plot(signals.index, signals["equity_curve"], linewidth=1.5)
+plt.axhline(1.0, linestyle="--", linewidth=1)
+plt.title(f"Pairs Trading Equity Curve ({s1} vs {s2})")
+plt.ylabel("Equity Curve")
+plt.grid(alpha=0.3)
 plt.tight_layout()
-plt.savefig("cumulative_returns.png", dpi=150)
+plt.savefig("improved_pairs_equity_curve.png", dpi=150)
 plt.show()
 
-# ── 9. Print performance summary ────────────────────────────────────
-total_return = signals["cumulative_returns"].iloc[-1] - 1
-print(f"\n Strategy Performance Summary:")
-print(f"Total Return:        {total_return*100:.2f}%")
-print(f"Starting value:      $10,000")
-print(f"Ending value:        ${10000 * (1 + total_return):,.2f}")
+plt.figure(figsize=(14, 5))
+plt.plot(signals.index, signals["zscore"], linewidth=1.2, label="Rolling Z-Score")
+plt.axhline(entry_z, linestyle="--", linewidth=1, label=f"Short Entry (+{entry_z})")
+plt.axhline(-entry_z, linestyle="--", linewidth=1, label=f"Long Entry (-{entry_z})")
+plt.axhline(exit_z, linestyle=":", linewidth=1, label=f"Exit (+{exit_z})")
+plt.axhline(-exit_z, linestyle=":", linewidth=1, label=f"Exit (-{exit_z})")
+
+buy_idx = signals.index[(signals["position"].diff() == 1) | (signals["position"].diff() == 2)]
+sell_idx = signals.index[(signals["position"].diff() == -1) | (signals["position"].diff() == -2)]
+
+plt.scatter(buy_idx, signals.loc[buy_idx, "zscore"], marker="^", s=70, zorder=5, label="Long Spread")
+plt.scatter(sell_idx, signals.loc[sell_idx, "zscore"], marker="v", s=70, zorder=5, label="Short Spread")
+
+plt.title(f"Rolling Z-Score Signals ({s1} vs {s2})")
+plt.ylabel("Z-Score")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.savefig("improved_pairs_zscore_signals.png", dpi=150)
+plt.show()
+
+plt.figure(figsize=(14, 5))
+plt.plot(signals.index, signals["portfolio_value"], linewidth=1.5)
+plt.title(f"Portfolio Value Over Time ({s1} vs {s2})")
+plt.ylabel("Portfolio Value ($)")
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.savefig("improved_pairs_portfolio_value.png", dpi=150)
+plt.show()
