@@ -56,3 +56,8 @@ python main.py
 - **Half-Life of Mean Reversion:** Estimates how quickly the spread reverts, used to filter tradable pairs
 - **Sharpe Ratio:** Measures risk-adjusted return
 - **Maximum Drawdown:** Captures the largest peak-to-trough loss
+
+## Key concepts
+- Does not account for slippage, market impact, or short borrowing costs
+- Hedge ratio is fixed during the trading period and not dynamically updated
+- Results are based on historical data and may not generalize to future market conditions
