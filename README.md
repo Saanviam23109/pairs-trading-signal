@@ -61,3 +61,8 @@ python main.py
 - Does not account for slippage, market impact, or short borrowing costs
 - Hedge ratio is fixed during the trading period and not dynamically updated
 - Results are based on historical data and may not generalize to future market conditions
+
+## Limitations
+- Does not account for slippage, market impact, or short borrowing costs
+- Hedge ratio is fixed during the trading period and not dynamically updated
+- Results are based on historical data and may not generalize to future market conditions
