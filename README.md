@@ -26,11 +26,14 @@ A quantitative trading strategy that identifies statistically cointegrated stock
 - Starting value: $10,000 → Ending value: $12,622.80
 
 ## Charts
-### Trading Signals
-![Signal Chart](pairs_trading_signal.png)
+### Rolling Z-Score Signals
+![Signal Chart](improved_pairs_zscore_signals.png)
 
-### Cumulative Returns
-![Returns Chart](cumulative_returns.png)
+### Equity Curve
+![Returns Chart](improved_pairs_equity_curve.png)
+
+### Portfolio Value
+![Returns Chart](improved_pairs_portfolio_value.png)
 
 ## Tech Stack
 - Python 3
