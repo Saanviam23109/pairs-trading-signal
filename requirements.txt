@@ -1,0 +1,7 @@
+# Python 3.10+; direct setup dependencies, not a reproducibility lock.
+# Capture the successful environment with: python3 -m pip freeze > requirements-lock.txt
+numpy
+pandas
+statsmodels
+yfinance
+matplotlib
